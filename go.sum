@@ -1,0 +1,4 @@
+github.com/projectdiscovery/naabu/v2 v2.5.0 h1:20iewFrye9MyyTk30Os9JE9yDQOSP9FqH1tKF6N2y/M=
+github.com/projectdiscovery/naabu/v2 v2.5.0/go.mod h1:qLYv2jj5MJaMBzD7iQATWC0nizoQd8qCt6piC7q+e0k=
+github.com/spaolacci/murmur3 v1.1.0 h1:7c1g84S4BPRrfL5Xrdp6fOJ206sU9y293DDHaoy0bLI=
+github.com/spaolacci/murmur3 v1.1.0/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=

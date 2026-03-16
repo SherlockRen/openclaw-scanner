@@ -129,7 +129,7 @@ func parseTargetToken(token string) ([]string, error) {
 	return []string{token}, nil
 }
 
-func ScanOpenPorts(targets []string, ports []int, threads int, timeout time.Duration) ([]models.HostScan, error) {
+func ScanOpenPorts(targets []string, ports []int, threads int, timeout time.Duration, onProgress func(host string, port int, event string)) ([]models.HostScan, error) {
 	if threads <= 0 {
 		threads = 100
 	}
@@ -141,6 +141,9 @@ func ScanOpenPorts(targets []string, ports []int, threads int, timeout time.Dura
 	sem := make(chan struct{}, threads)
 
 	for _, host := range targets {
+		if onProgress != nil {
+			onProgress(host, 0, "target-start")
+		}
 		for _, port := range ports {
 			wg.Add(1)
 			go func(host string, port int) {
@@ -154,6 +157,9 @@ func ScanOpenPorts(targets []string, ports []int, threads int, timeout time.Dura
 					return
 				}
 				_ = conn.Close()
+				if onProgress != nil {
+					onProgress(host, port, "port-open")
+				}
 
 				service, product, version := detectHTTPService(host, port, timeout)
 

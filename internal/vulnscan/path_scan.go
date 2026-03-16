@@ -11,7 +11,7 @@ import (
 	"openclaw-scan/internal/models"
 )
 
-func DetectPathLeaks(target string, openPorts []int, timeout time.Duration) []models.Finding {
+func DetectPathLeaks(target string, openPorts []int, timeout time.Duration, onRequest func(url string)) []models.Finding {
 	findings := make([]models.Finding, 0)
 	paths := []string{"/.env", "/.git/config", "/phpinfo.php", "/backup.zip", "/config.php.bak"}
 	for _, port := range openPorts {
@@ -24,7 +24,7 @@ func DetectPathLeaks(target string, openPorts []int, timeout time.Duration) []mo
 		}
 		for _, p := range paths {
 			url := fmt.Sprintf("%s://%s:%d%s", scheme, target, port, p)
-			status, contentType, body, err := probeHTTP(url, timeout)
+			status, contentType, body, err := probeHTTP(url, timeout, onRequest)
 			if err != nil {
 				continue
 			}
@@ -58,7 +58,10 @@ func DetectPathLeaks(target string, openPorts []int, timeout time.Duration) []mo
 	return findings
 }
 
-func probeHTTP(url string, timeout time.Duration) (int, string, string, error) {
+func probeHTTP(url string, timeout time.Duration, onRequest func(url string)) (int, string, string, error) {
+	if onRequest != nil {
+		onRequest(url)
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	client := &http.Client{Timeout: timeout, Transport: transport}

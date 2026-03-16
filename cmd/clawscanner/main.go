@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"openclaw-scan/internal/discovery"
@@ -24,7 +25,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: clawscanner <target|cidr> [--ports 18789,8080,3000] [--threads 100] [--timeout 30] [-o results.json]")
+		return fmt.Errorf("usage: clawscanner <target|cidr> [--ports 18789,8080,3000] [--threads 100] [--timeout 5] [-o results.json]")
 	}
 
 	started := time.Now()
@@ -32,7 +33,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("clawscanner", flag.ContinueOnError)
 	portsArg := fs.String("ports", "", "custom ports list/range")
 	threads := fs.Int("threads", 100, "concurrency for probing")
-	timeoutSec := fs.Int("timeout", 30, "timeout in seconds")
+	timeoutSec := fs.Int("timeout", 5, "timeout in seconds")
 	outFile := fs.String("o", "", "json report output path")
 	quiet := fs.Bool("quiet", false, "disable process logs")
 	requester := fs.String("requester", "cli", "requester")
@@ -79,23 +80,52 @@ func run(args []string) error {
 
 	scanStart := time.Now()
 	logStep(*quiet, "Scan", fmt.Sprintf("probing %d target(s) x %d port(s), threads=%d timeout=%ds", len(targets), len(ports), *threads, *timeoutSec))
-	hosts, err := discovery.ScanOpenPorts(targets, ports, *threads, time.Duration(*timeoutSec)*time.Second)
+	hosts, err := discovery.ScanOpenPorts(targets, ports, *threads, time.Duration(*timeoutSec)*time.Second, func(host string, port int, event string) {
+		switch event {
+		case "target-start":
+			logStep(*quiet, "Scan", fmt.Sprintf("scanning target ip=%s", host))
+		case "port-open":
+			logStep(*quiet, "Scan", fmt.Sprintf("target ip=%s open port=%d", host, port))
+		}
+	})
 	if err != nil {
 		return err
 	}
 	logDone(*quiet, "Scan", fmt.Sprintf("found %d responsive host(s) in %s", len(hosts), time.Since(scanStart).Truncate(time.Millisecond)))
 
 	detectStart := time.Now()
-	logStep(*quiet, "Detect", "running OpenClaw fingerprint + vuln/path checks on open ports only")
+	logStep(*quiet, "Detect", fmt.Sprintf("running OpenClaw fingerprint checks on open ports only, threads=%d", *threads))
 	findings := make([]models.Finding, 0)
+	requestLogger := func(url string) {
+		logStep(*quiet, "Detect", fmt.Sprintf("request url=%s", url))
+	}
+	detectThreads := *threads
+	if detectThreads <= 0 {
+		detectThreads = 100
+	}
+	var detectWG sync.WaitGroup
+	var detectMu sync.Mutex
+	detectSem := make(chan struct{}, detectThreads)
 	for _, h := range hosts {
 		if len(h.OpenPorts) == 0 {
 			continue
 		}
-		findings = append(findings, discovery.DetectOpenClawFingerprint(h.Target, h.OpenPorts)...)
-		findings = append(findings, vulnscan.DetectVersionVulns(h)...)
-		findings = append(findings, vulnscan.DetectPathLeaks(h.Target, h.OpenPorts, 3*time.Second)...)
+		detectWG.Add(1)
+		go func(host models.HostScan) {
+			defer detectWG.Done()
+			detectSem <- struct{}{}
+			defer func() { <-detectSem }()
+
+			hostFindings := discovery.DetectOpenClawFingerprint(host.Target, host.OpenPorts, time.Duration(*timeoutSec)*time.Second, requestLogger)
+			if len(hostFindings) == 0 {
+				return
+			}
+			detectMu.Lock()
+			findings = append(findings, hostFindings...)
+			detectMu.Unlock()
+		}(h)
 	}
+	detectWG.Wait()
 	findings = normalizeFindings(findings)
 	logDone(*quiet, "Detect", fmt.Sprintf("generated %d finding(s) in %s", len(findings), time.Since(detectStart).Truncate(time.Millisecond)))
 

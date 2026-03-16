@@ -3,7 +3,7 @@
 [中文文档 (Chinese README)](./README.zh-CN.md)
 
 `clawscanner` is a Go-based internal asset scanner for OpenClaw environments.
-It provides fast TCP port probing, OpenClaw fingerprint detection, basic version-based vulnerability checks, and sensitive-path exposure checks with JSON reporting.
+It provides fast TCP port probing and OpenClaw fingerprint detection with JSON reporting.
 
 ## Features
 
@@ -16,16 +16,13 @@ It provides fast TCP port probing, OpenClaw fingerprint detection, basic version
   - Default ports: `18789,19001,443,80,8080,8443`
   - Custom port list/range: `--ports 80,443,8080` or `--ports 8000-8100`
   - Configurable concurrency: `--threads` (default: `100`)
-  - Configurable TCP timeout: `--timeout` seconds (default: `30`)
+  - Configurable TCP timeout: `--timeout` seconds (default: `5`)
 - **OpenClaw fingerprinting (open ports only)**
   - HTML/body markers (`openclaw/moltbot/clawdbot`)
   - HTTP headers (`Server` / `X-Powered-By`)
   - Health API (`/api/v1/health`)
   - Favicon mmh3 matching (default hash: `-1172715710`)
   - Aggregated by `target + port` with confidence escalation for multiple hits
-- **Vulnerability / leak checks (open ports only)**
-  - Version comparison checks for common products
-  - Sensitive path probing (`/.env`, `/.git/config`, etc.) with basic false-positive reduction
 - **Reporting & output**
   - Colorized terminal progress + summary tables
   - JSON report output to file (`-o`) or stdout (when omitted)
@@ -54,7 +51,7 @@ go build -o clawscanner ./cmd/clawscanner
 ## CLI Usage
 
 ```bash
-clawscanner <target|cidr> [--ports 18789,8080,3000] [--threads 100] [--timeout 30] [-o results.json]
+clawscanner <target|cidr> [--ports 18789,8080,3000] [--threads 100] [--timeout 5] [-o results.json]
 ```
 
 ### Flags
@@ -101,11 +98,11 @@ This runs:
 
 - `cmd/clawscanner/main.go` — CLI entry and terminal output
 - `internal/discovery/` — target parsing and TCP/HTTP service discovery
-- `internal/vulnscan/` — fingerprinting, version checks, path leak checks
+- `internal/vulnscan/` — OpenClaw fingerprinting and detection helpers
 - `internal/models/result.go` — report data models
 - `internal/output/json.go` — JSON report writer
 
 ## Notes
 
-- Fingerprint/vulnerability checks are executed **only for open ports** returned by scanning.
+- Fingerprint checks are executed **only for open ports** returned by scanning.
 - TLS probing currently uses permissive verification mode to improve practical asset identification coverage.

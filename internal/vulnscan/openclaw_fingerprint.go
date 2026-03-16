@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,8 +22,9 @@ const defaultOpenClawFaviconMMH3 int32 = -1172715710
 
 var openClawFaviconPaths = []string{"/favicon.svg", "/favicon.ico"}
 
-func DetectOpenClawFingerprint(target string, openPorts []int) []models.Finding {
+func DetectOpenClawFingerprint(target string, openPorts []int, timeout time.Duration, onRequest func(url string)) []models.Finding {
 	findings := make([]models.Finding, 0)
+	cache := make(map[string]probeResult)
 	for _, port := range openPorts {
 		if port < 1 || port > 65535 {
 			continue
@@ -34,16 +36,16 @@ func DetectOpenClawFingerprint(target string, openPorts []int) []models.Finding 
 			if strings.HasPrefix(base, "https://") {
 				accessURL = base
 			}
-			if matched, detail := detectTitleBodyFingerprint(base); matched {
+			if matched, detail := detectTitleBodyFingerprint(base, timeout, onRequest, cache); matched {
 				addHit(&hits, seenHit, "OPENCLAW-HTML", detail)
 			}
-			if matched, detail := detectHeaderFingerprint(base); matched {
+			if matched, detail := detectHeaderFingerprint(base, timeout, onRequest, cache); matched {
 				addHit(&hits, seenHit, "OPENCLAW-HEADER", detail)
 			}
-			if matched, detail := detectHealthFingerprint(base); matched {
+			if matched, detail := detectHealthFingerprint(base, timeout, onRequest, cache); matched {
 				addHit(&hits, seenHit, "OPENCLAW-HEALTH", detail)
 			}
-			if matched, detail := detectFaviconFingerprint(base, defaultOpenClawFaviconMMH3); matched {
+			if matched, detail := detectFaviconFingerprint(base, defaultOpenClawFaviconMMH3, timeout, onRequest, cache); matched {
 				addHit(&hits, seenHit, "OPENCLAW-FAVICON", detail)
 			}
 		}
@@ -70,8 +72,8 @@ func preferredAccessURL(target string, port int) string {
 	return fmt.Sprintf("http://%s:%d", target, port)
 }
 
-func detectTitleBodyFingerprint(base string) (bool, string) {
-	status, _, body, err := probe(base, 3*time.Second)
+func detectTitleBodyFingerprint(base string, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (bool, string) {
+	status, _, body, err := probe(base, timeout, onRequest, cache)
 	if err != nil || status <= 0 {
 		return false, ""
 	}
@@ -90,8 +92,8 @@ func detectTitleBodyFingerprint(base string) (bool, string) {
 	return false, ""
 }
 
-func detectHeaderFingerprint(base string) (bool, string) {
-	status, headers, _, err := probe(base, 3*time.Second)
+func detectHeaderFingerprint(base string, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (bool, string) {
+	status, headers, _, err := probe(base, timeout, onRequest, cache)
 	if err != nil || status <= 0 {
 		return false, ""
 	}
@@ -106,8 +108,8 @@ func detectHeaderFingerprint(base string) (bool, string) {
 	return false, ""
 }
 
-func detectHealthFingerprint(base string) (bool, string) {
-	status, _, body, err := probe(base+"/api/v1/health", 3*time.Second)
+func detectHealthFingerprint(base string, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (bool, string) {
+	status, _, body, err := probe(base+"/api/v1/health", timeout, onRequest, cache)
 	if err != nil || status < 200 || status >= 300 {
 		return false, ""
 	}
@@ -121,9 +123,9 @@ func detectHealthFingerprint(base string) (bool, string) {
 	return false, ""
 }
 
-func detectFaviconFingerprint(base string, expected int32) (bool, string) {
-	if p, ok := extractIconPathFromHTML(base); ok {
-		status, _, body, err := probe(base+p, 3*time.Second)
+func detectFaviconFingerprint(base string, expected int32, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (bool, string) {
+	if p, ok := extractIconPathFromHTML(base, timeout, onRequest, cache); ok {
+		status, _, body, err := probe(base+p, timeout, onRequest, cache)
 		if err == nil && status >= 200 && status < 300 {
 			h := faviconMMH3([]byte(body))
 			if h == expected {
@@ -132,7 +134,7 @@ func detectFaviconFingerprint(base string, expected int32) (bool, string) {
 		}
 	}
 	for _, p := range openClawFaviconPaths {
-		status, _, body, err := probe(base+p, 3*time.Second)
+		status, _, body, err := probe(base+p, timeout, onRequest, cache)
 		if err != nil || status < 200 || status >= 300 {
 			continue
 		}
@@ -144,8 +146,8 @@ func detectFaviconFingerprint(base string, expected int32) (bool, string) {
 	return false, ""
 }
 
-func extractIconPathFromHTML(base string) (string, bool) {
-	status, _, body, err := probe(base, 3*time.Second)
+func extractIconPathFromHTML(base string, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (string, bool) {
+	status, _, body, err := probe(base, timeout, onRequest, cache)
 	if err != nil || status < 200 || status >= 300 {
 		return "", false
 	}
@@ -192,20 +194,49 @@ func faviconMMH3(raw []byte) int32 {
 	return int32(murmur3.Sum32([]byte(b.String())))
 }
 
-func probe(url string, timeout time.Duration) (int, http.Header, string, error) {
+type probeResult struct {
+	status  int
+	headers http.Header
+	body    string
+	err     error
+}
+
+func probe(url string, timeout time.Duration, onRequest func(url string), cache map[string]probeResult) (int, http.Header, string, error) {
+	key := url + "|" + strconv.FormatInt(timeout.Nanoseconds(), 10)
+	if cache != nil {
+		if r, ok := cache[key]; ok {
+			if r.headers == nil {
+				return r.status, nil, r.body, r.err
+			}
+			return r.status, r.headers.Clone(), r.body, r.err
+		}
+	}
+	if onRequest != nil {
+		onRequest(url)
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	client := &http.Client{Timeout: timeout, Transport: transport}
 	resp, err := client.Get(url)
 	if err != nil {
+		if cache != nil {
+			cache[key] = probeResult{status: 0, headers: nil, body: "", err: err}
+		}
 		return 0, nil, "", err
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if err != nil {
+		if cache != nil {
+			cache[key] = probeResult{status: 0, headers: nil, body: "", err: err}
+		}
 		return 0, nil, "", err
 	}
-	return resp.StatusCode, resp.Header.Clone(), string(b), nil
+	result := probeResult{status: resp.StatusCode, headers: resp.Header.Clone(), body: string(b), err: nil}
+	if cache != nil {
+		cache[key] = result
+	}
+	return result.status, result.headers.Clone(), result.body, nil
 }
 
 func buildOpenClawFinding(target string, port int, hits []string, accessURL string) models.Finding {
